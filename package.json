@@ -1,0 +1,23 @@
+{
+  "name": "webrtc-greet",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.29.0",
+    "boxicons": "^2.1.4",
+    "peerjs": "^1.4.7",
+    "preact": "^10.16.0",
+    "preact-router": "^4.1.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.5.0",
+    "typescript": "^5.0.2",
+    "vite": "^4.4.5"
+  }
+}

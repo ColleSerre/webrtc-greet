@@ -1,0 +1,70 @@
+#container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+#local-video {
+  display: none;
+  flex: 1;
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  border-radius: 20px;
+  margin-right: 10px;
+  margin-bottom: 10px;
+  z-index: 1;
+}
+
+#remote-video {
+  display: none;
+  z-index: 0;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  flex: 1;
+  /* make the video fill the whole screen */
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#button-tab {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  flex-direction: column;
+  margin-left: 20px;
+  margin-bottom: 20px;
+  background-color: white;
+  border-radius: 25px;
+}
+
+.icon-container {
+  background-color: transparent;
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+}
+
+.icon-container button {
+  outline: none;
+  border: none;
+  background-color: transparent;
+  cursor: pointer;
+}
+
+video::-webkit-media-controls {
+  display: none !important;
+}
+
+@supports (-webkit-touch-callout: none) {
+  #videobg:paused {
+    display: none;
+  }
+}
