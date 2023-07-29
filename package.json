@@ -13,7 +13,8 @@
     "boxicons": "^2.1.4",
     "peerjs": "^1.4.7",
     "preact": "^10.16.0",
-    "preact-router": "^4.1.2"
+    "preact-router": "^4.1.2",
+    "react-router-dom": "^6.14.2"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.5.0",

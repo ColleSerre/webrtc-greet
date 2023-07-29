@@ -7,16 +7,16 @@ import {
 import Peer from "peerjs";
 import "boxicons";
 import "./app.css";
+import { Link } from "react-router-dom";
 
 class Call extends Component {
   peer: any;
   uid: string;
-  profile_picture: string | undefined;
   username: string | undefined;
-  socials: {} | undefined;
   anecdote: string | undefined;
   localStream: MediaStream | null = null;
   remoteStream: MediaStream | null = null;
+  remoteUserID: string | null = null;
   supabase: SupabaseClient<any, "public", any>;
   subscriptionInserts: any;
   subscriptionUpdates: any;
@@ -27,6 +27,8 @@ class Call extends Component {
       | RealtimePostgresInsertPayload<{ [key: string]: any }>
       | RealtimePostgresUpdatePayload<{ [key: string]: any }>
   ) => {
+    console.log("onRealtimeUpdateOrInsert", payload);
+
     if (
       payload.new.peerID !== this.peer.id && // not own id
       payload.new.uid !== this.uid && // not own uid
@@ -34,11 +36,18 @@ class Call extends Component {
       this.localStream && // local stream
       !this.remoteStream // not already in a call
     ) {
+      // call with uid so client B can get userInfo from supabase
       const call = this.peer.call(
         payload.new.peerID,
-        this.localStream as MediaStream
+        this.localStream as MediaStream,
+        {
+          metadata: {
+            uid: this.uid,
+          },
+        }
       );
       console.log("calling", payload.new.uid);
+      this.remoteUserID = payload.new.uid;
 
       call.on("stream", (stream: MediaStream | null) => {
         this.remoteStream = stream;
@@ -46,7 +55,24 @@ class Call extends Component {
           "remote-video"
         ) as HTMLVideoElement;
         remoteVideo.srcObject = stream;
-        remoteVideo.play();
+        remoteVideo.style.display = "block";
+
+        // add remoteUserID (user B) to recent_calls
+        this.supabase
+          .from("users")
+          .select("recent_calls")
+          .eq("uid", this.uid)
+          .then(({ data, error }) => {
+            if (!error) {
+              data[0].recent_calls.push(this.remoteUserID);
+              this.supabase
+                .from("users")
+                .update({ recent_calls: data[0].recent_calls })
+                .eq("uid", this.uid);
+            } else {
+              console.log(error);
+            }
+          });
       });
     } else if (payload.new.peerID === this.peer.id) {
       console.log("received own id, passing");
@@ -73,17 +99,17 @@ class Call extends Component {
     localVideo.play();
     localVideo.style.display = "block";
   };
+  remoteUsername: any;
 
-  constructor(props: {} | undefined) {
+  constructor(props: any) {
     super(props);
+
+    const params = new URLSearchParams(window.location.search);
+    this.uid = params.get("uid") as string;
     this.supabase = new SupabaseClient(
       "https://ucjolalmoughwxjvuxkn.supabase.co",
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjam9sYWxtb3VnaHd4anZ1eGtuIiwicm9sZSI6ImFub24iLCJpYXQiOjE2ODQ4MzgzMDUsImV4cCI6MjAwMDQxNDMwNX0.qguXR5AdVqU7qBRtlirHROPSoZ7XMaY824e2b7WcuNo"
     );
-
-    // get uid from url
-    const urlParams = new URLSearchParams(window.location.search);
-    this.uid = urlParams.get("uid") as string;
 
     if (!this.uid) {
       console.log("uid not set, passing");
@@ -100,43 +126,45 @@ class Call extends Component {
           return;
         } else if (data) {
           this.username = data[0].username;
-          this.profile_picture = data[0].profile_picture;
-          this.socials = data[0].socials;
-          this.anecdote = data[0].anecdote;
-          if (this.username && this.socials) {
+          if (this.username) {
             this.peer = new Peer();
 
             this.peer.on("open", (id: any) => {
               this.gatherLocalMedia();
-              if (!this.username || !this.socials) {
-                console.log(this.username, this.socials);
-                console.log("username or socials not set, passing");
-                return;
-              }
-
               this.supabase
                 .from("lobby")
                 .insert([
                   {
                     uid: this.uid,
                     peerID: id,
-                    username: this.username,
-                    profile_picture: this.profile_picture,
-                    socials: this.socials,
-                    anecdote: this.anecdote,
+                    available: true,
                   },
                 ])
-                .then(({ data, error }) => {
+                .then(({ error }) => {
                   if (error) {
-                    console.log(error);
+                    if (error.code === "23505") {
+                      console.log("already in lobby, updating peerID");
+                      this.supabase
+                        .from("lobby")
+                        .update({ peerID: id, available: true })
+                        .eq("uid", this.uid)
+                        .then(({ error }) => {
+                          if (error) {
+                            console.log(error);
+                            return;
+                          } else {
+                            console.log("updated lobby");
+                          }
+                        });
+                    } else console.log(error);
                     return;
-                  } else if (data) {
+                  } else {
                     console.log("inserted into lobby");
                   }
                 });
 
               this.subscriptionInserts = this.supabase
-                .channel("lobby-changes")
+                .channel("lobby-changes-1")
                 .on(
                   "postgres_changes",
                   {
@@ -148,7 +176,7 @@ class Call extends Component {
                 );
 
               this.subscriptionUpdates = this.supabase
-                .channel("lobby-changes")
+                .channel("lobby-changes-1")
                 .on(
                   "postgres_changes",
                   {
@@ -164,9 +192,11 @@ class Call extends Component {
               console.log("subscriptionInserts started");
             });
 
+            // receive metadata from client A and retrieve userInfo from supabase
             this.peer.on(
               "call",
               (call: {
+                metadata: any;
                 answer: (arg0: MediaStream) => void;
                 peerConnection: { createDataChannel: (arg0: string) => any };
                 on: (arg0: string, arg1: (stream: any) => void) => void;
@@ -174,7 +204,11 @@ class Call extends Component {
                 console.log("call received");
                 if (this.localStream) {
                   call.answer(this.localStream);
+                  this.remoteUserID = call.metadata.uid;
+                  console.log("answered call from", call.metadata.uid);
                   call.on("stream", (stream: MediaStream | null) => {
+                    // just checking...
+                    this.remoteUserID = call.metadata.uid;
                     this.supabase
                       .from("lobby")
                       .update({
@@ -182,18 +216,61 @@ class Call extends Component {
                       })
                       .eq("uid", this.uid);
 
+                    // fetch remote userInfo
+                    this.supabase
+                      .from("users")
+                      .select("username")
+                      .eq("uid", this.remoteUserID)
+                      .then(({ data, error }) => {
+                        if (error) {
+                          console.log(error);
+                          return;
+                        } else if (data) {
+                          this.remoteUsername = data[0].username; // display this now
+                          console.log("my username", this.username);
+                          console.log("remote username", this.remoteUsername);
+                          // all of this is async so we can update the recent_calls array here too
+                          // this is client B stuff, so we need to update client A's recent_calls too ✅
+                          this.supabase
+                            .from("users")
+                            .select("recent_calls")
+                            .eq("uid", this.uid)
+                            .then(({ data, error }) => {
+                              if (error) {
+                                console.log(error);
+                                return;
+                              }
+                              if (data) {
+                                data[0].recent_calls.push(this.remoteUserID);
+                                this.supabase
+                                  .from("users")
+                                  .update({
+                                    recent_calls: data[0].recent_calls,
+                                  })
+                                  .eq("uid", this.uid)
+                                  .then(({ error }) => {
+                                    if (error) {
+                                      console.log(error);
+                                      return;
+                                    } else {
+                                      console.log("updated recent_calls");
+                                    }
+                                  });
+                              }
+                            });
+                        }
+                      });
                     this.remoteStream = stream;
                     const remoteVideo = document.getElementById(
                       "remote-video"
                     ) as HTMLVideoElement;
                     remoteVideo.srcObject = stream;
-                    remoteVideo.play();
                     remoteVideo.style.display = "block";
                   });
                 }
               }
             );
-          }
+          } else console.log("username not set, passing");
         }
       });
   }
@@ -216,6 +293,17 @@ class Call extends Component {
           }`}
         </style>
 
+        <h2
+          style={{
+            position: "absolute",
+            top: "0",
+            left: "0",
+            color: "white",
+            zIndex: 1,
+          }}
+        >
+          {this.remoteUsername}
+        </h2>
         <video
           muted
           id={"local-video"}
@@ -283,15 +371,17 @@ class Call extends Component {
             }}
             class="icon-container"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="25"
-              height="25"
-              viewBox="0 0 24 24"
-              style="fill: red;transform: ;msFilter:;"
-            >
-              <path d="M21 5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5zm-4.793 9.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
-            </svg>
+            <Link to="/end">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="25"
+                height="25"
+                viewBox="0 0 24 24"
+                style="fill: red;transform: ;msFilter:;"
+              >
+                <path d="M21 5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5zm-4.793 9.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
+              </svg>
+            </Link>
           </button>
         </div>
       </div>

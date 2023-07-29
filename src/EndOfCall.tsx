@@ -2,6 +2,9 @@ import { Component } from "preact";
 import "./app.css";
 
 class EndOfCall extends Component {
+  constructor(props: any) {
+    super(props);
+  }
   render() {
     return (
       <div
