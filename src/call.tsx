@@ -9,6 +9,7 @@ import "boxicons";
 import "./app.css";
 import { Link } from "react-router-dom";
 import toast, { Toaster } from "react-hot-toast";
+import { io } from "socket.io-client";
 
 class Call extends Component {
   peer: any;
@@ -17,14 +18,15 @@ class Call extends Component {
   anecdote: string | undefined;
   localStream: MediaStream | null = null;
   remoteStream: MediaStream | null = null;
+
   remoteUserID: string | null = null;
-  supabase: SupabaseClient<any, "public", any>;
   subscriptionInserts: any;
   subscriptionUpdates: any;
   counter = 60 * 6;
   remoteUsername: any;
   openSnackbar: any;
   closeSnackbar: any;
+  supabase: SupabaseClient<any, "public", any>;
   state: {
     loading: boolean;
   };
@@ -96,6 +98,26 @@ class Call extends Component {
       console.log("calling", payload.new.uid);
       this.remoteUserID = payload.new.uid;
 
+      call.on("error", (err: any) => {
+        console.log("call error", err);
+        this.remoteStream = null;
+        this.remoteUserID = null;
+        this.remoteUsername = null;
+        const remoteVideo = document.getElementById(
+          "remote-video"
+        ) as HTMLVideoElement;
+        if (remoteVideo) {
+          remoteVideo.srcObject = null;
+        }
+        toast.error("Call ended", {
+          duration: 5000,
+          position: "top-center",
+
+          id: "call-ended",
+        });
+        this.setState({ loading: true });
+      });
+
       call.on("stream", (stream: MediaStream | null) => {
         this.remoteStream = stream;
         const remoteVideo = document.getElementById(
@@ -104,7 +126,11 @@ class Call extends Component {
         if (remoteVideo) {
           remoteVideo.srcObject = stream;
         }
-        toast.success("Found a partner!");
+        toast.success("Found a partner!", {
+          duration: 5000,
+          position: "top-center",
+          id: "match-found",
+        });
         this.setState({ loading: false });
         // add remoteUserID (user B) to recent_calls
         this.supabase
@@ -155,15 +181,55 @@ class Call extends Component {
 
     const params = new URLSearchParams(window.location.search);
     this.uid = params.get("uid") as string;
+
+    if (!process.env.VITE_SOCKET_SERVER || !process.env.VITE_SUPABASE_KEY) {
+      console.log("socket server and supabase key not set, passing");
+      return;
+    }
+
     this.supabase = new SupabaseClient(
       "https://ucjolalmoughwxjvuxkn.supabase.co",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjam9sYWxtb3VnaHd4anZ1eGtuIiwicm9sZSI6ImFub24iLCJpYXQiOjE2ODQ4MzgzMDUsImV4cCI6MjAwMDQxNDMwNX0.qguXR5AdVqU7qBRtlirHROPSoZ7XMaY824e2b7WcuNo"
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjam9sYWxtb3VnaHd4anZ1eGtuIiwicm9sZSI6ImFub24iLCJpYXQiOjE2ODQ4MzgzMDUsImV4cCI6MjAwMDQxNDMwNX0.qguXR5AdVqU7qBRtlirHROPSoZ7XMaY824e2b7WcuNo" // fuck you ts
     );
 
     if (!this.uid) {
       console.log("uid not set, passing");
       return;
     }
+
+    const socket = io(process.env.VITE_SOCKET_SERVER);
+
+    socket.on("connect", () => {
+      console.log("socket connected");
+    });
+
+    socket.on("callClosed", (uid) => {
+      if (uid !== this.uid) {
+        return;
+      }
+
+      console.log("call closed");
+      this.remoteStream = null;
+      const remoteVideo = document.getElementById(
+        "remote-video"
+      ) as HTMLVideoElement;
+      if (remoteVideo) {
+        remoteVideo.srcObject = null;
+      }
+
+      toast.error("Call ended", {
+        duration: 5000,
+        position: "top-center",
+        id: "call-ended",
+      });
+      this.setState({ loading: true });
+
+      // set as available again
+      this.supabase
+        .from("lobby")
+        .update({ available: true })
+        .eq("uid", this.uid);
+    });
 
     this.supabase
       .from("users")
@@ -177,6 +243,10 @@ class Call extends Component {
           this.username = data[0].username;
           if (this.username) {
             this.peer = new Peer();
+
+            this.peer.on("error", (err: any) => {
+              console.log("peer error", err);
+            });
 
             this.peer.on("open", (id: any) => {
               this.gatherLocalMedia();
@@ -255,10 +325,52 @@ class Call extends Component {
                   call.answer(this.localStream);
                   this.remoteUserID = call.metadata.uid;
                   console.log("answered call from", call.metadata.uid);
+
+                  call.on("close", () => {
+                    console.log("call closed");
+                    this.remoteStream = null;
+                    this.remoteUserID = null;
+                    this.remoteUsername = null;
+                    const remoteVideo = document.getElementById(
+                      "remote-video"
+                    ) as HTMLVideoElement;
+                    if (remoteVideo) {
+                      remoteVideo.srcObject = null;
+                    }
+                    toast.error("Call ended", {
+                      duration: 5000,
+                      position: "top-center",
+                      id: "call-ended",
+                    });
+                    this.setState({ loading: true });
+                  });
+
+                  call.on("error", (err: any) => {
+                    console.log("call error", err);
+                    this.remoteStream = null;
+                    this.remoteUserID = null;
+                    this.remoteUsername = null;
+                    const remoteVideo = document.getElementById(
+                      "remote-video"
+                    ) as HTMLVideoElement;
+                    if (remoteVideo) {
+                      remoteVideo.srcObject = null;
+                    }
+                    toast.error("Call ended", {
+                      duration: 5000,
+                      position: "top-center",
+
+                      id: "call-ended",
+                    });
+                    this.setState({ loading: true });
+                  });
+
                   call.on("stream", (stream: MediaStream | null) => {
                     this.setState({ loading: false });
                     toast.success("Found a match!", {
+                      duration: 5000,
                       position: "top-center",
+                      id: "match-found",
                     });
                     // just checking...
                     this.remoteUserID = call.metadata.uid;
@@ -286,7 +398,7 @@ class Call extends Component {
                           // this is client B stuff, so we need to update client A's recent_calls too ✅
                           this.supabase
                             .from("users")
-                            .select("recent_calls")
+                            .select("recent_calls, recent_calls_show")
                             .eq("uid", this.uid)
                             .then(({ data, error }) => {
                               if (error) {
@@ -295,10 +407,22 @@ class Call extends Component {
                               }
                               if (data) {
                                 data[0].recent_calls.push(this.remoteUserID);
+
+                                if (!data[0].recent_calls_show) {
+                                  data[0].recent_calls_show = [
+                                    this.remoteUserID,
+                                  ];
+                                } else {
+                                  data[0].recent_calls_show.push(
+                                    this.remoteUserID
+                                  );
+                                }
                                 this.supabase
                                   .from("users")
                                   .update({
                                     recent_calls: data[0].recent_calls,
+                                    recent_calls_show:
+                                      data[0].recent_calls_show,
                                   })
                                   .eq("uid", this.uid)
                                   .then(({ error }) => {
@@ -342,6 +466,7 @@ class Call extends Component {
     document.body.classList.add("no-scroll");
     return (
       <div id="container">
+        <Toaster />
         <style>
           {`
         no-scroll {
@@ -425,13 +550,11 @@ class Call extends Component {
                           console.log(error);
                           return;
                         } else {
-                          this.remoteStream = null;
-                          this.remoteUserID = null;
-                          this.remoteUsername = null;
-                          this.setState({ loading: true });
+                          console.log("skipped user");
                           toast("Skipping user...", {
                             duration: 2000,
                             icon: "⏭",
+                            id: "skip-toast",
                             style: {
                               zIndex: 999999,
                               position: "absolute",
@@ -439,6 +562,9 @@ class Call extends Component {
                               left: "20px",
                             },
                           });
+                          this.remoteStream = null;
+                          this.remoteUserID = null;
+                          this.remoteUsername = null;
                         }
                       });
                   }}
@@ -457,11 +583,6 @@ class Call extends Component {
                 </button>
                 <button
                   onClick={() => {
-                    toast("Call ended", {
-                      position: "top-center",
-                      duration: 2000,
-                      icon: "👋",
-                    });
                     this.cancel();
                   }}
                   class="icon-container"
