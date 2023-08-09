@@ -196,10 +196,10 @@ class Call extends Component {
       console.log("uid not set, passing");
       return;
     }
-
+    
     const socket = io(process.env.VITE_SOCKET_SERVER);
 
-    socket.on("connect", () => {
+    socket.on("connection", () => {
       console.log("socket connected");
     });
 
