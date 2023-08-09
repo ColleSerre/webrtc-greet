@@ -10,6 +10,7 @@ import "./app.css";
 import { Link } from "react-router-dom";
 import toast, { Toaster } from "react-hot-toast";
 import { io } from "socket.io-client";
+import { route } from "preact-router";
 
 class Call extends Component {
   peer: any;
@@ -61,8 +62,8 @@ class Call extends Component {
 
   cancel = () => {
     if (this.uid) {
+      this.socket.emit("endCall");
       this.supabase.from("lobby").delete().eq("uid", this.uid);
-      this.socket.emit("callEnded", this.uid);
       this.subscriptionInserts?.unsubscribe();
       this.subscriptionUpdates?.unsubscribe();
     }
@@ -70,6 +71,12 @@ class Call extends Component {
     if (this.localStream) this.localStream.getTracks().forEach((t) => t.stop());
     if (this.remoteStream)
       this.remoteStream.getTracks().forEach((t) => t.stop());
+    const remoteVideo = document.getElementById(
+      "remote-video"
+    ) as HTMLVideoElement;
+    if (remoteVideo) {
+      remoteVideo.srcObject = null;
+    }
   };
 
   onRealtimeUpdateOrInsert = (
@@ -127,6 +134,11 @@ class Call extends Component {
         if (remoteVideo) {
           remoteVideo.srcObject = stream;
         }
+
+        // tell server you're in a call with remoteUserID
+
+        this.socket.emit("callStart", this.uid, this.remoteUserID);
+
         toast.success("Found a partner!", {
           duration: 5000,
           position: "top-center",
@@ -377,6 +389,11 @@ class Call extends Component {
                     });
                     // just checking...
                     this.remoteUserID = call.metadata.uid;
+
+                    // tell socket you're in a call
+
+                    this.socket.emit("callStart", this.uid, this.remoteUserID);
+
                     this.supabase
                       .from("lobby")
                       .update({
@@ -588,20 +605,19 @@ class Call extends Component {
                 <button
                   onClick={() => {
                     this.cancel();
+                    route("/end");
                   }}
                   class="icon-container"
                 >
-                  <Link to="/end">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="25"
-                      height="25"
-                      viewBox="0 0 24 24"
-                      style="fill: red;transform: ;msFilter:;"
-                    >
-                      <path d="M21 5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5zm-4.793 9.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
-                    </svg>
-                  </Link>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="25"
+                    height="25"
+                    viewBox="0 0 24 24"
+                    style="fill: red;transform: ;msFilter:;"
+                  >
+                    <path d="M21 5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5zm-4.793 9.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
+                  </svg>
                 </button>
               </div>
             </div>
