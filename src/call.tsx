@@ -192,12 +192,12 @@ class Call extends Component {
       return;
     }
 
-    if (!process.env.VITE_SOCKET_SERVER) {
+    if (!import.meta.env.VITE_SOCKET_SERVER) {
       console.log("No Socket Server URL found");
       return;
     }
 
-    const socket = io(process.env.VITE_SOCKET_SERVER);
+    const socket = io(import.meta.env.VITE_SOCKET_SERVER);
 
     socket.on("connection", () => {
       console.log("socket connected");
