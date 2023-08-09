@@ -62,6 +62,7 @@ class Call extends Component {
   cancel = () => {
     if (this.uid) {
       this.supabase.from("lobby").delete().eq("uid", this.uid);
+      this.socket.emit("callEnded", this.uid);
       this.subscriptionInserts?.unsubscribe();
       this.subscriptionUpdates?.unsubscribe();
     }
@@ -171,6 +172,7 @@ class Call extends Component {
       localVideo.srcObject = stream;
     }
   };
+  socket: any;
 
   constructor(props: any) {
     super(props);
@@ -197,13 +199,13 @@ class Call extends Component {
       return;
     }
 
-    const socket = io(import.meta.env.VITE_SOCKET_SERVER);
+    this.socket = io(import.meta.env.VITE_SOCKET_SERVER);
 
-    socket.on("connection", () => {
+    this.socket.on("connection", () => {
       console.log("socket connected");
     });
 
-    socket.on("callClosed", (uid) => {
+    this.socket.on("callClosed", (uid: string) => {
       console.log(uid, this.uid);
       if (uid !== this.uid) {
         return;
@@ -457,6 +459,7 @@ class Call extends Component {
   }
 
   componentWillUnmount(): void {
+    this.socket.emit("callClosed", this.uid);
     this.subscriptionInserts?.unsubscribe();
     this.subscriptionUpdates?.unsubscribe();
     this.supabase.from("lobby").delete().match({ id: this.peer.id });
