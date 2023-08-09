@@ -204,6 +204,7 @@ class Call extends Component {
     });
 
     socket.on("callClosed", (uid) => {
+      console.log(uid, this.uid);
       if (uid !== this.uid) {
         return;
       }
