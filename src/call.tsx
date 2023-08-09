@@ -182,11 +182,6 @@ class Call extends Component {
     const params = new URLSearchParams(window.location.search);
     this.uid = params.get("uid") as string;
 
-    if (!process.env.VITE_SOCKET_SERVER || !process.env.VITE_SUPABASE_KEY) {
-      console.log("socket server and supabase key not set, passing");
-      return;
-    }
-
     this.supabase = new SupabaseClient(
       "https://ucjolalmoughwxjvuxkn.supabase.co",
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjam9sYWxtb3VnaHd4anZ1eGtuIiwicm9sZSI6ImFub24iLCJpYXQiOjE2ODQ4MzgzMDUsImV4cCI6MjAwMDQxNDMwNX0.qguXR5AdVqU7qBRtlirHROPSoZ7XMaY824e2b7WcuNo" // fuck you ts
@@ -196,7 +191,12 @@ class Call extends Component {
       console.log("uid not set, passing");
       return;
     }
-    
+
+    if (!process.env.VITE_SOCKET_SERVER) {
+      console.log("No Socket Server URL found");
+      return;
+    }
+
     const socket = io(process.env.VITE_SOCKET_SERVER);
 
     socket.on("connection", () => {
