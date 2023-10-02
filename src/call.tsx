@@ -7,22 +7,22 @@ import {
 import Peer from "peerjs";
 import "boxicons";
 import "./app.css";
-import { Link } from "react-router-dom";
 import toast, { Toaster } from "react-hot-toast";
-import { io } from "socket.io-client";
-import { route } from "preact-router";
+import { Mic, MicOff, SkipForward, X } from "lucide-preact";
 
 class Call extends Component {
   peer: any;
   uid: string;
   username: string | undefined;
-  anecdote: string | undefined;
+  profile_picture: string | undefined;
+  degree: string | undefined;
+  blockedUsers: string[] | undefined;
   localStream: MediaStream | null = null;
   remoteStream: MediaStream | null = null;
-
   remoteUserID: string | null = null;
   subscriptionInserts: any;
   subscriptionUpdates: any;
+  subscriptionDeletes: any;
   counter = 60 * 6;
   remoteUsername: any;
   openSnackbar: any;
@@ -30,7 +30,21 @@ class Call extends Component {
   supabase: SupabaseClient<any, "public", any>;
   state: {
     loading: boolean;
+    muted: boolean;
+    showSnackbar: boolean;
+    snackProps?: {
+      callF: {
+        metadata: any;
+        answer: (arg0: MediaStream) => void;
+        peerConnection: { createDataChannel: (arg0: string) => any };
+        on: (arg0: string, arg1: (stream: any) => void) => void;
+      };
+      username: string;
+      profilePicture: string;
+      degree: string;
+    };
   };
+  subscription: any;
 
   Loading = () => {
     const funny_sentences = [
@@ -50,22 +64,26 @@ class Call extends Component {
         <button
           onClick={() => {
             this.cancel();
+            window.location.href = "/end";
           }}
         >
-          <Link to="/end" id="cancel">
-            Cancel
-          </Link>
+          Cancel
         </button>
       </div>
     );
   };
 
-  cancel = () => {
+  cancel = async () => {
     if (this.uid) {
-      this.socket.emit("endCall");
-      this.supabase.from("lobby").delete().eq("uid", this.uid);
+      console.log("deleting from lobby");
+      const { error } = await this.supabase
+        .from("lobby")
+        .delete()
+        .eq("uid", this.uid);
+      console.log(error);
       this.subscriptionInserts?.unsubscribe();
       this.subscriptionUpdates?.unsubscribe();
+      this.subscriptionDeletes?.unsubscribe();
     }
     if (this.peer) this.peer.destroy();
     if (this.localStream) this.localStream.getTracks().forEach((t) => t.stop());
@@ -79,6 +97,24 @@ class Call extends Component {
     }
   };
 
+  onCallEnd = () => {
+    this.remoteStream = null;
+    this.remoteUserID = null;
+    this.remoteUsername = null;
+    const remoteVideo = document.getElementById(
+      "remote-video"
+    ) as HTMLVideoElement;
+    if (remoteVideo) {
+      remoteVideo.srcObject = null;
+    }
+    toast.error("Call ended", {
+      duration: 5000,
+      position: "top-center",
+      id: "call-ended",
+    });
+    this.setState({ loading: true });
+  };
+
   onRealtimeUpdateOrInsert = (
     payload:
       | RealtimePostgresInsertPayload<{ [key: string]: any }>
@@ -87,11 +123,12 @@ class Call extends Component {
     console.log("onRealtimeUpdateOrInsert", payload);
 
     if (
-      payload.new.peerID !== this.peer.id && // not own id
+      payload.new.peerID !== this.peer.id && // not own peerID
       payload.new.uid !== this.uid && // not own uid
       payload.new.available && // available
       this.localStream && // local stream
-      !this.remoteStream // not already in a call
+      !this.remoteStream && // not already in a call
+      !this.blockedUsers?.includes(payload.new.uid) // not blocked
     ) {
       // call with uid so client B can get userInfo from supabase
       const call = this.peer.call(
@@ -100,6 +137,9 @@ class Call extends Component {
         {
           metadata: {
             uid: this.uid,
+            username: this.username,
+            degree: this.degree,
+            profilePicture: this.profile_picture,
           },
         }
       );
@@ -137,18 +177,48 @@ class Call extends Component {
 
         // tell server you're in a call with remoteUserID
 
-        this.socket.emit("callStart", this.uid, this.remoteUserID);
-
         toast.success("Found a partner!", {
           duration: 5000,
           position: "top-center",
           id: "match-found",
         });
+
+        this.supabase
+          .from("lobby")
+          .update({
+            available: false,
+          })
+          .eq("uid", this.uid);
+
+        // fetch remote userInfo
+        this.supabase
+          .from("users")
+          .select("username, degree")
+          .eq("uid", this.remoteUserID)
+          .then(({ data, error }) => {
+            if (error) {
+              console.log(error);
+              return;
+            } else if (data) {
+              this.remoteUsername = data[0].username; // display this now
+              document.getElementById("remote-username")!.innerHTML =
+                this.remoteUsername;
+              if (data[0].degree) {
+                document.getElementById("remote-degree")!.innerHTML =
+                  data[0].degree;
+              }
+            }
+          });
+        this.subscriptionInserts?.unsubscribe();
+        this.subscriptionUpdates?.unsubscribe();
+        this.subscriptionDeletes?.unsubscribe();
+
         this.setState({ loading: false });
+
         // add remoteUserID (user B) to recent_calls
         this.supabase
           .from("users")
-          .select("recent_calls")
+          .select("recent_calls, recent_calls_show")
           .eq("uid", this.uid)
           .then(({ data, error }) => {
             if (!error) {
@@ -157,17 +227,37 @@ class Call extends Component {
                 .from("users")
                 .update({ recent_calls: data[0].recent_calls })
                 .eq("uid", this.uid);
+
+              if (!data[0].recent_calls_show) {
+                data[0].recent_calls_show = [this.remoteUserID];
+              } else {
+                data[0].recent_calls_show.push(this.remoteUserID);
+              }
             } else {
               console.log(error);
             }
           });
       });
+    } else if (payload.new.uid === this.remoteUserID && payload.new.available) {
+      this.onCallEnd();
     } else if (payload.new.peerID === this.peer.id) {
       console.log("received own id, passing");
     } else if (this.remoteStream) {
       console.log("already in a call, passing");
     } else if (!this.localStream) {
       console.log("no local stream, passing");
+    } else if (!payload.new.available) {
+      console.log("not available, passing");
+    } else if (this.blockedUsers?.includes(payload.new.uid)) {
+      console.log("blocked user, passing");
+    }
+  };
+
+  onRealtimeDelete = (payload: any) => {
+    console.log("onRealtimeDelete", payload);
+    // here if the remoteUserID is deleted, we need to end the call
+    if (payload.old.uid === this.remoteUserID) {
+      this.onCallEnd();
     }
   };
 
@@ -183,14 +273,16 @@ class Call extends Component {
     if (localVideo) {
       localVideo.srcObject = stream;
     }
+    return stream ? true : false;
   };
-  socket: any;
 
   constructor(props: any) {
     super(props);
 
     this.state = {
       loading: true,
+      muted: false,
+      showSnackbar: false,
     };
 
     const params = new URLSearchParams(window.location.search);
@@ -206,46 +298,6 @@ class Call extends Component {
       return;
     }
 
-    if (!import.meta.env.VITE_SOCKET_SERVER) {
-      console.log("No Socket Server URL found");
-      return;
-    }
-
-    this.socket = io(import.meta.env.VITE_SOCKET_SERVER);
-
-    this.socket.on("connection", () => {
-      console.log("socket connected");
-    });
-
-    this.socket.on("callClosed", (uid: string) => {
-      console.log(uid, this.uid);
-      if (uid !== this.uid) {
-        return;
-      }
-
-      console.log("call closed");
-      this.remoteStream = null;
-      const remoteVideo = document.getElementById(
-        "remote-video"
-      ) as HTMLVideoElement;
-      if (remoteVideo) {
-        remoteVideo.srcObject = null;
-      }
-
-      toast.error("Call ended", {
-        duration: 5000,
-        position: "top-center",
-        id: "call-ended",
-      });
-      this.setState({ loading: true });
-
-      // set as available again
-      this.supabase
-        .from("lobby")
-        .update({ available: true })
-        .eq("uid", this.uid);
-    });
-
     this.supabase
       .from("users")
       .select("*")
@@ -256,6 +308,9 @@ class Call extends Component {
           return;
         } else if (data) {
           this.username = data[0].username;
+          this.degree = data[0].degree;
+          this.profile_picture = data[0].profile_picture;
+          this.blockedUsers = data[0].blocked ?? [];
           if (this.username) {
             this.peer = new Peer();
 
@@ -264,41 +319,47 @@ class Call extends Component {
             });
 
             this.peer.on("open", (id: any) => {
-              this.gatherLocalMedia();
-              this.supabase
-                .from("lobby")
-                .insert([
-                  {
-                    uid: this.uid,
-                    peerID: id,
-                    available: true,
-                  },
-                ])
-                .then(({ error }) => {
-                  if (error) {
-                    if (error.code === "23505") {
-                      console.log("already in lobby, updating peerID");
-                      this.supabase
-                        .from("lobby")
-                        .update({ peerID: id, available: true })
-                        .eq("uid", this.uid)
-                        .then(({ error }) => {
-                          if (error) {
-                            console.log(error);
-                            return;
-                          } else {
-                            console.log("updated lobby");
-                          }
-                        });
-                    } else console.log(error);
-                    return;
-                  } else {
-                    console.log("inserted into lobby");
-                  }
-                });
+              this.gatherLocalMedia().then((gotStream) => {
+                if (!gotStream) {
+                  console.log("no stream, passing");
+                  return;
+                }
+                console.log("got local stream");
+                this.supabase
+                  .from("lobby")
+                  .insert([
+                    {
+                      uid: this.uid,
+                      peerID: id,
+                      available: true,
+                    },
+                  ])
+                  .then(({ error }) => {
+                    if (error) {
+                      if (error.code === "23505") {
+                        console.log("already in lobby, updating peerID");
+                        this.supabase
+                          .from("lobby")
+                          .update({ peerID: id, available: true })
+                          .eq("uid", this.uid)
+                          .then(({ error }) => {
+                            if (error) {
+                              console.log(error);
+                              return;
+                            } else {
+                              console.log("updated lobby");
+                            }
+                          });
+                      } else console.log(error);
+                      return;
+                    } else {
+                      console.log("inserted into lobby");
+                    }
+                  });
+              });
 
               this.subscriptionInserts = this.supabase
-                .channel("lobby-changes-1")
+                .channel(`inserts-${this.uid}`)
                 .on(
                   "postgres_changes",
                   {
@@ -306,11 +367,14 @@ class Call extends Component {
                     schema: "public",
                     table: "lobby",
                   },
-                  (payload) => this.onRealtimeUpdateOrInsert(payload)
+                  (payload) => {
+                    console.log("subscriptionInserts", payload);
+                    this.onRealtimeUpdateOrInsert(payload);
+                  }
                 );
 
               this.subscriptionUpdates = this.supabase
-                .channel("lobby-changes-1")
+                .channel(`updates-${this.uid}`)
                 .on(
                   "postgres_changes",
                   {
@@ -318,11 +382,50 @@ class Call extends Component {
                     schema: "public",
                     table: "lobby",
                   },
-                  (payload) => this.onRealtimeUpdateOrInsert(payload)
+                  (payload) => {
+                    console.log("update: ", payload);
+                    this.onRealtimeUpdateOrInsert(payload);
+                  }
                 );
 
-              this.subscriptionInserts.subscribe();
-              this.subscriptionUpdates.subscribe();
+              this.subscriptionDeletes = this.supabase
+                .channel(`deletes-${this.uid}`)
+                .on(
+                  "postgres_changes",
+                  {
+                    event: "DELETE",
+                    schema: "public",
+                    table: "lobby",
+                  },
+                  (payload) => {
+                    console.log("deleted", payload);
+                    this.onRealtimeDelete(payload);
+                  }
+                )
+                .subscribe();
+
+              this.subscription = this.supabase
+                .channel(`deletes-${this.uid}`)
+                .on(
+                  "postgres_changes",
+                  {
+                    event: "*",
+                    schema: "public",
+                    table: "lobby",
+                  },
+                  (payload) => {
+                    if (payload.eventType === "DELETE") {
+                      this.onRealtimeDelete(payload);
+                    } else if (
+                      payload.eventType === "INSERT" ||
+                      payload.eventType === "UPDATE"
+                    ) {
+                      this.onRealtimeUpdateOrInsert(payload);
+                    }
+                  }
+                );
+
+              this.subscription.subscribe();
               console.log("subscriptionInserts started");
             });
 
@@ -335,139 +438,16 @@ class Call extends Component {
                 peerConnection: { createDataChannel: (arg0: string) => any };
                 on: (arg0: string, arg1: (stream: any) => void) => void;
               }) => {
+                this.setState({
+                  showSnackbar: true,
+                  snackProps: {
+                    username: call.metadata.username,
+                    profilePicture: call.metadata.profilePicture,
+                    degree: call.metadata.degree,
+                    callF: call,
+                  },
+                });
                 console.log("call received");
-                if (this.localStream) {
-                  call.answer(this.localStream);
-                  this.remoteUserID = call.metadata.uid;
-                  console.log("answered call from", call.metadata.uid);
-
-                  call.on("close", () => {
-                    console.log("call closed");
-                    this.remoteStream = null;
-                    this.remoteUserID = null;
-                    this.remoteUsername = null;
-                    const remoteVideo = document.getElementById(
-                      "remote-video"
-                    ) as HTMLVideoElement;
-                    if (remoteVideo) {
-                      remoteVideo.srcObject = null;
-                    }
-                    toast.error("Call ended", {
-                      duration: 5000,
-                      position: "top-center",
-                      id: "call-ended",
-                    });
-                    this.setState({ loading: true });
-                  });
-
-                  call.on("error", (err: any) => {
-                    console.log("call error", err);
-                    this.remoteStream = null;
-                    this.remoteUserID = null;
-                    this.remoteUsername = null;
-                    const remoteVideo = document.getElementById(
-                      "remote-video"
-                    ) as HTMLVideoElement;
-                    if (remoteVideo) {
-                      remoteVideo.srcObject = null;
-                    }
-                    toast.error("Call ended", {
-                      duration: 5000,
-                      position: "top-center",
-
-                      id: "call-ended",
-                    });
-                    this.setState({ loading: true });
-                  });
-
-                  call.on("stream", (stream: MediaStream | null) => {
-                    this.setState({ loading: false });
-                    toast.success("Found a match!", {
-                      duration: 5000,
-                      position: "top-center",
-                      id: "match-found",
-                    });
-                    // just checking...
-                    this.remoteUserID = call.metadata.uid;
-
-                    // tell socket you're in a call
-
-                    this.socket.emit("callStart", this.uid, this.remoteUserID);
-
-                    this.supabase
-                      .from("lobby")
-                      .update({
-                        available: false,
-                      })
-                      .eq("uid", this.uid);
-
-                    // fetch remote userInfo
-                    this.supabase
-                      .from("users")
-                      .select("username")
-                      .eq("uid", this.remoteUserID)
-                      .then(({ data, error }) => {
-                        if (error) {
-                          console.log(error);
-                          return;
-                        } else if (data) {
-                          this.remoteUsername = data[0].username; // display this now
-                          console.log("my username", this.username);
-                          console.log("remote username", this.remoteUsername);
-                          // all of this is async so we can update the recent_calls array here too
-                          // this is client B stuff, so we need to update client A's recent_calls too ✅
-                          this.supabase
-                            .from("users")
-                            .select("recent_calls, recent_calls_show")
-                            .eq("uid", this.uid)
-                            .then(({ data, error }) => {
-                              if (error) {
-                                console.log(error);
-                                return;
-                              }
-                              if (data) {
-                                data[0].recent_calls.push(this.remoteUserID);
-
-                                if (!data[0].recent_calls_show) {
-                                  data[0].recent_calls_show = [
-                                    this.remoteUserID,
-                                  ];
-                                } else {
-                                  data[0].recent_calls_show.push(
-                                    this.remoteUserID
-                                  );
-                                }
-                                this.supabase
-                                  .from("users")
-                                  .update({
-                                    recent_calls: data[0].recent_calls,
-                                    recent_calls_show:
-                                      data[0].recent_calls_show,
-                                  })
-                                  .eq("uid", this.uid)
-                                  .then(({ error }) => {
-                                    if (error) {
-                                      console.log(error);
-                                      return;
-                                    } else {
-                                      console.log("updated recent_calls");
-                                    }
-                                  });
-                              }
-                            });
-                        }
-                      });
-                    this.remoteStream = stream;
-                    const remoteVideo = document.getElementById(
-                      "remote-video"
-                    ) as HTMLVideoElement;
-                    if (remoteVideo) {
-                      remoteVideo.srcObject = stream;
-                    }
-                    this.subscriptionInserts?.unsubscribe();
-                    this.subscriptionUpdates?.unsubscribe();
-                  });
-                }
               }
             );
           } else console.log("username not set, passing");
@@ -476,15 +456,250 @@ class Call extends Component {
   }
 
   componentWillUnmount(): void {
-    this.socket.emit("callClosed", this.uid);
     this.subscriptionInserts?.unsubscribe();
     this.subscriptionUpdates?.unsubscribe();
-    this.supabase.from("lobby").delete().match({ id: this.peer.id });
+    this.subscriptionDeletes?.unsubscribe();
+    this.supabase.from("lobby").delete().eq("uid", this.uid);
     this.peer.destroy();
   }
 
+  endCallButton = () => {
+    return (
+      <button
+        onClick={() => {
+          this.cancel();
+          window.location.href = "/end";
+        }}
+        style={{
+          backgroundColor: "white",
+          borderRadius: "25px",
+        }}
+      >
+        <X color={"red"} size={25} />
+      </button>
+    );
+  };
+
+  SnackBar = ({
+    username,
+    profilePicture,
+    degree,
+    onClick,
+  }: {
+    username: string;
+    profilePicture: string;
+    degree: string;
+    onClick: () => void;
+  }) => {
+    return (
+      <div
+        style={{
+          // position: bottom center
+          position: "absolute",
+          bottom: "20px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 999999,
+          backgroundColor: "white",
+          borderRadius: "25px",
+          padding: "10px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          minWidth: "300px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            flexDirection: "row",
+            gap: "25px",
+          }}
+        >
+          <img
+            src={profilePicture}
+            alt="profile picture"
+            style={{
+              width: "50px",
+              height: "50px",
+              borderRadius: "50%",
+            }}
+          />
+          <div
+            style={{
+              color: "#1e1e1e",
+            }}
+          >
+            <h3>{username}</h3>
+            <h4
+              style={{
+                fontSize: "0.8rem",
+                fontWeight: "light",
+              }}
+            >
+              {degree}
+            </h4>
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            this.setState({ showSnackbar: false });
+          }}
+          style={{
+            backgroundColor: "white",
+            borderRadius: "25px",
+            color: "black",
+          }}
+        >
+          Skip
+        </button>
+        <button onClick={onClick}>Call</button>
+      </div>
+    );
+  };
+
   render() {
+    const acceptCall = (call: {
+      metadata: any;
+      answer: (arg0: MediaStream) => void;
+      peerConnection: { createDataChannel: (arg0: string) => any };
+      on: (arg0: string, arg1: (stream: any) => void) => void;
+    }) => {
+      if (this.localStream) {
+        call.answer(this.localStream);
+        this.remoteUserID = call.metadata.uid;
+        console.log("answered call from", call.metadata.uid);
+
+        call.on("close", () => {
+          console.log("call closed");
+          this.remoteStream = null;
+          this.remoteUserID = null;
+          this.remoteUsername = null;
+          const remoteVideo = document.getElementById(
+            "remote-video"
+          ) as HTMLVideoElement;
+          if (remoteVideo) {
+            remoteVideo.srcObject = null;
+          }
+          toast.error("Call ended", {
+            duration: 5000,
+            position: "top-center",
+            id: "call-ended",
+          });
+          this.setState({ loading: true });
+        });
+
+        call.on("error", (err: any) => {
+          console.log("call error", err);
+          this.remoteStream = null;
+          this.remoteUserID = null;
+          this.remoteUsername = null;
+          const remoteVideo = document.getElementById(
+            "remote-video"
+          ) as HTMLVideoElement;
+          if (remoteVideo) {
+            remoteVideo.srcObject = null;
+          }
+          toast.error("Call ended", {
+            duration: 5000,
+            position: "top-center",
+
+            id: "call-ended",
+          });
+          this.setState({ loading: true });
+        });
+
+        call.on("stream", (stream: MediaStream | null) => {
+          this.setState({ loading: false });
+          toast.success("Found a match!", {
+            duration: 5000,
+            position: "top-center",
+            id: "match-found",
+          });
+          // just checking...
+          this.remoteUserID = call.metadata.uid;
+
+          this.supabase
+            .from("lobby")
+            .update({
+              available: false,
+            })
+            .eq("uid", this.uid);
+
+          // fetch remote userInfo
+          this.supabase
+            .from("users")
+            .select("username, degree")
+            .eq("uid", this.remoteUserID)
+            .then(({ data, error }) => {
+              if (error) {
+                console.log(error);
+                return;
+              } else if (data) {
+                this.remoteUsername = data[0].username; // display this now
+                document.getElementById("remote-username")!.innerHTML =
+                  this.remoteUsername;
+
+                if (data[0].degree) {
+                  document.getElementById("remote-degree")!.innerHTML =
+                    data[0].degree;
+                }
+
+                // all of this is async so we can update the recent_calls array here too
+                // this is client B stuff, so we need to update client A's recent_calls too ✅
+                this.supabase
+                  .from("users")
+                  .select("recent_calls, recent_calls_show")
+                  .eq("uid", this.uid)
+                  .then(({ data, error }) => {
+                    if (error) {
+                      console.log(error);
+                      return;
+                    }
+                    if (data) {
+                      data[0].recent_calls.push(this.remoteUserID);
+
+                      if (!data[0].recent_calls_show) {
+                        data[0].recent_calls_show = [this.remoteUserID];
+                      } else {
+                        data[0].recent_calls_show.push(this.remoteUserID);
+                      }
+                      this.supabase
+                        .from("users")
+                        .update({
+                          recent_calls: data[0].recent_calls,
+                          recent_calls_show: data[0].recent_calls_show,
+                        })
+                        .eq("uid", this.uid)
+                        .then(({ error }) => {
+                          if (error) {
+                            console.log(error);
+                            return;
+                          } else {
+                            console.log("updated recent_calls");
+                          }
+                        });
+                    }
+                  });
+              }
+            });
+          this.remoteStream = stream;
+          const remoteVideo = document.getElementById(
+            "remote-video"
+          ) as HTMLVideoElement;
+          if (remoteVideo) {
+            remoteVideo.srcObject = stream;
+          }
+          this.subscriptionInserts?.unsubscribe();
+          this.subscriptionUpdates?.unsubscribe();
+          this.subscriptionDeletes?.unsubscribe();
+        });
+      }
+    };
+
     document.body.classList.add("no-scroll");
+
     return (
       <div id="container">
         <Toaster />
@@ -496,131 +711,136 @@ class Call extends Component {
         </style>
         {!window.location.href.endsWith("end") && (
           <>
-            <div
-              id="loading-container"
-              style={{
-                display: this.state.loading ? "flex" : "none",
-              }}
-            >
-              <this.Loading />
-            </div>
-
-            <div
-              id="calling-container"
-              style={{
-                display: !this.state.loading ? "flex" : "none",
-              }}
-            >
-              <h2
+            {this.state.loading && (
+              <div
+                id="loading-container"
                 style={{
-                  position: "absolute",
-                  top: "0",
-                  left: "0",
-                  color: "white",
-                  zIndex: 1,
+                  display: "flex",
                 }}
               >
-                {this.remoteUsername}
-              </h2>
-              <video
-                id="remote-video"
-                playsInline
-                autoPlay={true}
-                controls={false}
-                preload="auto"
-                type="video/mp4"
-              />
-              <video
-                muted
-                id={"local-video"}
-                playsInline={true}
-                autoPlay={true}
-                controls={false}
-                preload="auto"
-                type="video/mp4"
-              />
-              <div id="button-tab">
-                <button
-                  onClick={() => {
-                    // mute local stream
-                    this.localStream?.getAudioTracks().forEach((track) => {
-                      track.enabled = !track.enabled;
-                    });
-                  }}
-                  class="icon-container"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="25"
-                    height="25"
-                    viewBox="0 0 24 24"
-                    style="fill: rgba(65, 84, 249, 1);transform: ;msFilter:;"
-                  >
-                    <path d="M12 16c2.206 0 4-1.794 4-4V6c0-2.217-1.785-4.021-3.979-4.021a.933.933 0 0 0-.209.025A4.006 4.006 0 0 0 8 6v6c0 2.206 1.794 4 4 4z"></path>
-                    <path d="M11 19.931V22h2v-2.069c3.939-.495 7-3.858 7-7.931h-2c0 3.309-2.691 6-6 6s-6-2.691-6-6H4c0 4.072 3.061 7.436 7 7.931z"></path>
-                  </svg>
-                </button>
-                <button
-                  onClick={() => {
-                    this.supabase
-                      .from("lobby")
-                      .update({ available: true })
-                      .eq("uid", this.uid)
-                      .then(({ error }) => {
-                        if (error) {
-                          console.log(error);
-                          return;
-                        } else {
-                          console.log("skipped user");
-                          toast("Skipping user...", {
-                            duration: 2000,
-                            icon: "⏭",
-                            id: "skip-toast",
-                            style: {
-                              zIndex: 999999,
-                              position: "absolute",
-                              bottom: "20px",
-                              left: "20px",
-                            },
-                          });
-                          this.remoteStream = null;
-                          this.remoteUserID = null;
-                          this.remoteUsername = null;
-                        }
-                      });
-                  }}
-                  className="icon-container"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="25"
-                    height="25"
-                    viewBox="0 0 24 24"
-                    style="fill: rgba(65, 84, 249, 1);transform: ;msFilter:;"
-                  >
-                    <path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8z"></path>
-                    <path d="m8 16 5-4-5-4zm5-4v4h2V8h-2z"></path>
-                  </svg>
-                </button>
-                <button
-                  onClick={() => {
-                    this.cancel();
-                    route("/end");
-                  }}
-                  class="icon-container"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="25"
-                    height="25"
-                    viewBox="0 0 24 24"
-                    style="fill: red;transform: ;msFilter:;"
-                  >
-                    <path d="M21 5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5zm-4.793 9.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
-                  </svg>
-                </button>
+                <this.Loading />
+                {this.state.showSnackbar &&
+                  this.state.snackProps &&
+                  this.SnackBar({
+                    username: this.state.snackProps?.username,
+                    profilePicture: this.state.snackProps?.profilePicture,
+                    degree: this.state.snackProps?.degree,
+                    onClick: () => {
+                      this.setState({ showSnackbar: false });
+                      if (this.state.snackProps?.callF) {
+                        acceptCall(this.state.snackProps?.callF);
+                      }
+                    },
+                  })}
               </div>
-            </div>
+            )}
+            {!this.state.loading && (
+              <div
+                id="calling-container"
+                style={{
+                  display: "flex",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "0",
+                    right: "0",
+                    zIndex: 1,
+                    padding: "20px",
+                  }}
+                >
+                  <h3
+                    style={{
+                      textAlign: "right",
+                      color: "#1e1e1e",
+                    }}
+                    id="remote-username"
+                  ></h3>
+                  <h3
+                    style={{
+                      textAlign: "right",
+                      color: "#1e1e1e",
+                    }}
+                    id="remote-degree"
+                  ></h3>
+                </div>
+                <video
+                  id="remote-video"
+                  playsInline
+                  autoPlay={true}
+                  controls={false}
+                  preload="auto"
+                  type="video/mp4"
+                />
+                <video
+                  muted
+                  id={"local-video"}
+                  playsInline={true}
+                  autoPlay={true}
+                  controls={false}
+                  preload="auto"
+                  type="video/mp4"
+                />
+                <div id="button-tab">
+                  <button
+                    onClick={() => {
+                      // mute local stream
+                      this.localStream?.getAudioTracks().forEach((track) => {
+                        track.enabled = !track.enabled;
+                      });
+
+                      this.setState({ muted: !this.state.muted });
+                    }}
+                    class="icon-container"
+                  >
+                    {!this.state.muted && <Mic color={"black"} size={25} />}
+                    {this.state.muted && <MicOff color="black" size={25} />}
+                  </button>
+                  <button
+                    onClick={() => {
+                      this.supabase
+                        .from("lobby")
+                        .update({ available: true })
+                        .eq("uid", this.uid)
+                        .then(({ error }) => {
+                          if (error) {
+                            console.log(error);
+                            return;
+                          } else {
+                            console.log("skipped user");
+                            toast("Skipping user...", {
+                              duration: 2000,
+                              icon: "⏭",
+                              id: "skip-toast",
+                              style: {
+                                zIndex: 999999,
+                                position: "absolute",
+                                bottom: "20px",
+                                left: "20px",
+                              },
+                            });
+                            this.remoteStream = null;
+                            this.remoteUserID = null;
+                            this.remoteUsername = null;
+                            const remoteVideo = document.getElementById(
+                              "remote-video"
+                            ) as HTMLVideoElement;
+                            if (remoteVideo) {
+                              remoteVideo.srcObject = null;
+                            }
+                            this.setState({ loading: true });
+                          }
+                        });
+                    }}
+                    className="icon-container"
+                  >
+                    <SkipForward color="blue" size={25} />
+                  </button>
+                  <this.endCallButton />
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
