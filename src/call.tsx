@@ -46,6 +46,14 @@ class Call extends Component {
   };
   subscription: any;
 
+  Match = () => {
+    return (
+      <div id={"match"}>
+        <h1>Match !</h1>
+      </div>
+    );
+  };
+
   Loading = () => {
     const funny_sentences = [
       "Finding a partner...",
@@ -716,8 +724,10 @@ class Call extends Component {
                 id="loading-container"
                 style={{
                   display: "flex",
+                  flexDirection: "column",
                 }}
               >
+                <this.Match />
                 <this.Loading />
                 {this.state.showSnackbar &&
                   this.state.snackProps &&
