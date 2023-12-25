@@ -9,6 +9,7 @@ import "boxicons";
 import "./app.css";
 import toast, { Toaster } from "react-hot-toast";
 import { Mic, MicOff, SkipForward, X } from "lucide-preact";
+import Icebreaker from "./Icebreakers";
 
 class Call extends Component {
   peer: any;
@@ -32,6 +33,7 @@ class Call extends Component {
     loading: boolean;
     muted: boolean;
     showSnackbar: boolean;
+    showIcebreaker: boolean;
     snackProps?: {
       callF: {
         metadata: any;
@@ -45,13 +47,11 @@ class Call extends Component {
     };
   };
   subscription: any;
-
-  Match = () => {
-    return (
-      <div id={"match"}>
-        <h1>Match !</h1>
-      </div>
-    );
+  icebreaker: {
+    header: string;
+    options: string[];
+    duration: number;
+    index: number;
   };
 
   Loading = () => {
@@ -176,11 +176,9 @@ class Call extends Component {
 
       call.on("stream", (stream: MediaStream | null) => {
         this.remoteStream = stream;
-        const remoteVideo = document.getElementById(
-          "remote-video"
-        ) as HTMLVideoElement;
-        if (remoteVideo) {
-          remoteVideo.srcObject = stream;
+        const rv = document.getElementById("remote-video") as HTMLVideoElement;
+        if (rv) {
+          rv.srcObject = stream;
         }
 
         // tell server you're in a call with remoteUserID
@@ -245,6 +243,17 @@ class Call extends Component {
               console.log(error);
             }
           });
+
+        // here we wait for the Icebreaker to finish
+        // then we show the video
+        // since we're client A, we wait for client B to send us an icebreaker
+
+        this.peer.on("connection", (conn: any) => {
+          conn.on("data", (data: any) => {
+            console.log("received", data);
+            this.onReceiveIcebreaker(data);
+          });
+        });
       });
     } else if (payload.new.uid === this.remoteUserID && payload.new.available) {
       this.onCallEnd();
@@ -269,6 +278,193 @@ class Call extends Component {
     }
   };
 
+  onReceiveIcebreaker = (icebreaker: {
+    header: string;
+    options: string[];
+    duration: number;
+    index: number;
+  }) => {
+    console.log("onReceiveIcebreaker", icebreaker);
+    this.icebreaker = icebreaker;
+    this.setState({ showIcebreaker: true });
+  };
+
+  onCall = (call: {
+    metadata: any;
+    answer: (arg0: MediaStream) => void;
+    peer: string;
+    peerConnection: { createDataChannel: (arg0: string) => any };
+    on: (arg0: string, arg1: (stream: any) => void) => void;
+  }) => {
+    if (this.localStream) {
+      call.answer(this.localStream);
+      this.remoteUserID = call.metadata.uid;
+      console.log("answered call from", call.metadata.uid);
+
+      call.on("close", () => {
+        console.log("call closed");
+        this.remoteStream = null;
+        this.remoteUserID = null;
+        this.remoteUsername = null;
+        const remoteVideo = document.getElementById(
+          "remote-video"
+        ) as HTMLVideoElement;
+        if (remoteVideo) {
+          remoteVideo.srcObject = null;
+        }
+        toast.error("Call ended", {
+          duration: 5000,
+          position: "top-center",
+          id: "call-ended",
+        });
+        this.setState({ loading: true });
+      });
+
+      call.on("error", (err: any) => {
+        console.log("call error", err);
+        this.remoteStream = null;
+        this.remoteUserID = null;
+        this.remoteUsername = null;
+        const remoteVideo = document.getElementById(
+          "remote-video"
+        ) as HTMLVideoElement;
+        if (remoteVideo) {
+          remoteVideo.srcObject = null;
+        }
+        toast.error("Call ended", {
+          duration: 5000,
+          position: "top-center",
+
+          id: "call-ended",
+        });
+        this.setState({ loading: true });
+      });
+
+      call.on("stream", (stream: MediaStream | null) => {
+        this.setState({ loading: false });
+        toast.success("Found a match!", {
+          duration: 5000,
+          position: "top-center",
+          id: "match-found",
+        });
+        // just checking...
+        this.remoteUserID = call.metadata.uid;
+
+        this.supabase
+          .from("lobby")
+          .update({
+            available: false,
+          })
+          .eq("uid", this.uid);
+
+        // fetch remote userInfo
+        this.supabase
+          .from("users")
+          .select("username, degree")
+          .eq("uid", this.remoteUserID)
+          .then(({ data, error }) => {
+            if (error) {
+              console.log(error);
+              return;
+            } else if (data) {
+              this.remoteUsername = data[0].username; // display this now
+              document.getElementById("remote-username")!.innerHTML =
+                this.remoteUsername;
+
+              if (data[0].degree) {
+                document.getElementById("remote-degree")!.innerHTML =
+                  data[0].degree;
+              }
+
+              // all of this is async so we can update the recent_calls array here too
+              // this is client B stuff, so we need to update client A's recent_calls too ✅
+              this.supabase
+                .from("users")
+                .select("recent_calls, recent_calls_show")
+                .eq("uid", this.uid)
+                .then(({ data, error }) => {
+                  if (error) {
+                    console.log(error);
+                    return;
+                  }
+                  if (data) {
+                    data[0].recent_calls.push(this.remoteUserID);
+
+                    if (!data[0].recent_calls_show) {
+                      data[0].recent_calls_show = [this.remoteUserID];
+                    } else {
+                      data[0].recent_calls_show.push(this.remoteUserID);
+                    }
+                    this.supabase
+                      .from("users")
+                      .update({
+                        recent_calls: data[0].recent_calls,
+                        recent_calls_show: data[0].recent_calls_show,
+                      })
+                      .eq("uid", this.uid)
+                      .then(({ error }) => {
+                        if (error) {
+                          console.log(error);
+                          return;
+                        } else {
+                          console.log("updated recent_calls");
+                        }
+                      });
+                  }
+                });
+            }
+          });
+
+        this.subscriptionInserts?.unsubscribe();
+        this.subscriptionUpdates?.unsubscribe();
+        this.subscriptionDeletes?.unsubscribe();
+
+        // here we wait for the Icebreaker to finish
+        // then we show the video
+        // get a random icebreaker
+        this.supabase
+          .from("icebreakers")
+          .select("*", { count: "exact" })
+          .then(({ data, error }) => {
+            if (error) {
+              console.log(error);
+              return;
+            } else if (data) {
+              const r = Math.random();
+              const i = Math.floor(r * data.length);
+
+              const icebreaker = {
+                // don't trigger the icebreaker yet
+                header: data[i].content,
+                options: data[i].options,
+                duration: data[i].duration ?? 10000,
+                index: i,
+              };
+
+              // now we send it to the client
+              const conn = this.peer.connect(call.peer);
+              conn.on("open", () => {
+                conn.send(icebreaker);
+              });
+
+              this.icebreaker = icebreaker;
+
+              // now we can show the icebreaker
+              this.setState({ showIcebreaker: true });
+              this.remoteStream = stream;
+              const remoteVideo = document.getElementById(
+                "remote-video"
+              ) as HTMLVideoElement;
+              if (remoteVideo) {
+                remoteVideo.srcObject = stream;
+                console.log("set remote video srcObject");
+              }
+            }
+          });
+      });
+    }
+  };
+
   gatherLocalMedia = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: true,
@@ -286,11 +482,18 @@ class Call extends Component {
 
   constructor(props: any) {
     super(props);
+    this.icebreaker = {
+      header: "",
+      options: [],
+      duration: 0,
+      index: 0,
+    };
 
     this.state = {
       loading: true,
       muted: false,
       showSnackbar: false,
+      showIcebreaker: false,
     };
 
     const params = new URLSearchParams(window.location.search);
@@ -365,6 +568,7 @@ class Call extends Component {
                     }
                   });
               });
+              this.peer.on("call", this.onCall);
 
               this.subscriptionInserts = this.supabase
                 .channel(`inserts-${this.uid}`)
@@ -458,6 +662,13 @@ class Call extends Component {
                 console.log("call received");
               }
             );
+
+            this.peer.on("connection", (conn: any) => {
+              conn.on("data", (data: any) => {
+                console.log("received", data);
+                this.onReceiveIcebreaker(data);
+              });
+            });
           } else console.log("username not set, passing");
         }
       });
@@ -488,226 +699,8 @@ class Call extends Component {
     );
   };
 
-  SnackBar = ({
-    username,
-    profilePicture,
-    degree,
-    onClick,
-  }: {
-    username: string;
-    profilePicture: string;
-    degree: string;
-    onClick: () => void;
-  }) => {
-    return (
-      <div
-        style={{
-          // position: bottom center
-          position: "absolute",
-          bottom: "20px",
-          left: "50%",
-          transform: "translateX(-50%)",
-          zIndex: 999999,
-          backgroundColor: "white",
-          borderRadius: "25px",
-          padding: "10px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          minWidth: "300px",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            flexDirection: "row",
-            gap: "25px",
-          }}
-        >
-          <img
-            src={profilePicture}
-            alt="profile picture"
-            style={{
-              width: "50px",
-              height: "50px",
-              borderRadius: "50%",
-            }}
-          />
-          <div
-            style={{
-              color: "#1e1e1e",
-            }}
-          >
-            <h3>{username}</h3>
-            <h4
-              style={{
-                fontSize: "0.8rem",
-                fontWeight: "light",
-              }}
-            >
-              {degree}
-            </h4>
-          </div>
-        </div>
-        <button
-          onClick={() => {
-            this.setState({ showSnackbar: false });
-          }}
-          style={{
-            backgroundColor: "white",
-            borderRadius: "25px",
-            color: "black",
-          }}
-        >
-          Skip
-        </button>
-        <button onClick={onClick}>Call</button>
-      </div>
-    );
-  };
-
   render() {
-    const acceptCall = (call: {
-      metadata: any;
-      answer: (arg0: MediaStream) => void;
-      peerConnection: { createDataChannel: (arg0: string) => any };
-      on: (arg0: string, arg1: (stream: any) => void) => void;
-    }) => {
-      if (this.localStream) {
-        call.answer(this.localStream);
-        this.remoteUserID = call.metadata.uid;
-        console.log("answered call from", call.metadata.uid);
-
-        call.on("close", () => {
-          console.log("call closed");
-          this.remoteStream = null;
-          this.remoteUserID = null;
-          this.remoteUsername = null;
-          const remoteVideo = document.getElementById(
-            "remote-video"
-          ) as HTMLVideoElement;
-          if (remoteVideo) {
-            remoteVideo.srcObject = null;
-          }
-          toast.error("Call ended", {
-            duration: 5000,
-            position: "top-center",
-            id: "call-ended",
-          });
-          this.setState({ loading: true });
-        });
-
-        call.on("error", (err: any) => {
-          console.log("call error", err);
-          this.remoteStream = null;
-          this.remoteUserID = null;
-          this.remoteUsername = null;
-          const remoteVideo = document.getElementById(
-            "remote-video"
-          ) as HTMLVideoElement;
-          if (remoteVideo) {
-            remoteVideo.srcObject = null;
-          }
-          toast.error("Call ended", {
-            duration: 5000,
-            position: "top-center",
-
-            id: "call-ended",
-          });
-          this.setState({ loading: true });
-        });
-
-        call.on("stream", (stream: MediaStream | null) => {
-          this.setState({ loading: false });
-          toast.success("Found a match!", {
-            duration: 5000,
-            position: "top-center",
-            id: "match-found",
-          });
-          // just checking...
-          this.remoteUserID = call.metadata.uid;
-
-          this.supabase
-            .from("lobby")
-            .update({
-              available: false,
-            })
-            .eq("uid", this.uid);
-
-          // fetch remote userInfo
-          this.supabase
-            .from("users")
-            .select("username, degree")
-            .eq("uid", this.remoteUserID)
-            .then(({ data, error }) => {
-              if (error) {
-                console.log(error);
-                return;
-              } else if (data) {
-                this.remoteUsername = data[0].username; // display this now
-                document.getElementById("remote-username")!.innerHTML =
-                  this.remoteUsername;
-
-                if (data[0].degree) {
-                  document.getElementById("remote-degree")!.innerHTML =
-                    data[0].degree;
-                }
-
-                // all of this is async so we can update the recent_calls array here too
-                // this is client B stuff, so we need to update client A's recent_calls too ✅
-                this.supabase
-                  .from("users")
-                  .select("recent_calls, recent_calls_show")
-                  .eq("uid", this.uid)
-                  .then(({ data, error }) => {
-                    if (error) {
-                      console.log(error);
-                      return;
-                    }
-                    if (data) {
-                      data[0].recent_calls.push(this.remoteUserID);
-
-                      if (!data[0].recent_calls_show) {
-                        data[0].recent_calls_show = [this.remoteUserID];
-                      } else {
-                        data[0].recent_calls_show.push(this.remoteUserID);
-                      }
-                      this.supabase
-                        .from("users")
-                        .update({
-                          recent_calls: data[0].recent_calls,
-                          recent_calls_show: data[0].recent_calls_show,
-                        })
-                        .eq("uid", this.uid)
-                        .then(({ error }) => {
-                          if (error) {
-                            console.log(error);
-                            return;
-                          } else {
-                            console.log("updated recent_calls");
-                          }
-                        });
-                    }
-                  });
-              }
-            });
-          this.remoteStream = stream;
-          const remoteVideo = document.getElementById(
-            "remote-video"
-          ) as HTMLVideoElement;
-          if (remoteVideo) {
-            remoteVideo.srcObject = stream;
-          }
-          this.subscriptionInserts?.unsubscribe();
-          this.subscriptionUpdates?.unsubscribe();
-          this.subscriptionDeletes?.unsubscribe();
-        });
-      }
-    };
-
     document.body.classList.add("no-scroll");
-
     return (
       <div id="container">
         <Toaster />
@@ -727,130 +720,132 @@ class Call extends Component {
                   flexDirection: "column",
                 }}
               >
-                <this.Match />
                 <this.Loading />
-                {this.state.showSnackbar &&
-                  this.state.snackProps &&
-                  this.SnackBar({
-                    username: this.state.snackProps?.username,
-                    profilePicture: this.state.snackProps?.profilePicture,
-                    degree: this.state.snackProps?.degree,
-                    onClick: () => {
-                      this.setState({ showSnackbar: false });
-                      if (this.state.snackProps?.callF) {
-                        acceptCall(this.state.snackProps?.callF);
-                      }
-                    },
-                  })}
               </div>
             )}
-            {!this.state.loading && (
+            {this.state.showIcebreaker && (
+              <Icebreaker
+                onTimerComplete={() => {
+                  console.log("Show video now");
+                  this.setState({ showIcebreaker: false });
+                }}
+                selectedAnswerCallback={(answer) => {
+                  console.log("Selected answer", answer);
+                }}
+                duration={this.icebreaker.duration}
+                header={this.icebreaker.header}
+                options={this.icebreaker.options}
+              />
+            )}
+
+            <div
+              id="calling-container"
+              style={{
+                display:
+                  this.state.loading || this.state.showIcebreaker
+                    ? "none"
+                    : "flex",
+              }}
+            >
               <div
-                id="calling-container"
                 style={{
-                  display: "flex",
+                  position: "absolute",
+                  top: "0",
+                  right: "0",
+                  zIndex: 1,
+                  padding: "20px",
                 }}
               >
-                <div
+                <h3
                   style={{
-                    position: "absolute",
-                    top: "0",
-                    right: "0",
-                    zIndex: 1,
-                    padding: "20px",
+                    textAlign: "right",
+                    color: "#1e1e1e",
                   }}
-                >
-                  <h3
-                    style={{
-                      textAlign: "right",
-                      color: "#1e1e1e",
-                    }}
-                    id="remote-username"
-                  ></h3>
-                  <h3
-                    style={{
-                      textAlign: "right",
-                      color: "#1e1e1e",
-                    }}
-                    id="remote-degree"
-                  ></h3>
-                </div>
-                <video
-                  id="remote-video"
-                  playsInline
-                  autoPlay={true}
-                  controls={false}
-                  preload="auto"
-                  type="video/mp4"
-                />
-                <video
-                  muted
-                  id={"local-video"}
-                  playsInline={true}
-                  autoPlay={true}
-                  controls={false}
-                  preload="auto"
-                  type="video/mp4"
-                />
-                <div id="button-tab">
-                  <button
-                    onClick={() => {
-                      // mute local stream
-                      this.localStream?.getAudioTracks().forEach((track) => {
-                        track.enabled = !track.enabled;
-                      });
-
-                      this.setState({ muted: !this.state.muted });
-                    }}
-                    class="icon-container"
-                  >
-                    {!this.state.muted && <Mic color={"black"} size={25} />}
-                    {this.state.muted && <MicOff color="black" size={25} />}
-                  </button>
-                  <button
-                    onClick={() => {
-                      this.supabase
-                        .from("lobby")
-                        .update({ available: true })
-                        .eq("uid", this.uid)
-                        .then(({ error }) => {
-                          if (error) {
-                            console.log(error);
-                            return;
-                          } else {
-                            console.log("skipped user");
-                            toast("Skipping user...", {
-                              duration: 2000,
-                              icon: "⏭",
-                              id: "skip-toast",
-                              style: {
-                                zIndex: 999999,
-                                position: "absolute",
-                                bottom: "20px",
-                                left: "20px",
-                              },
-                            });
-                            this.remoteStream = null;
-                            this.remoteUserID = null;
-                            this.remoteUsername = null;
-                            const remoteVideo = document.getElementById(
-                              "remote-video"
-                            ) as HTMLVideoElement;
-                            if (remoteVideo) {
-                              remoteVideo.srcObject = null;
-                            }
-                            this.setState({ loading: true });
-                          }
-                        });
-                    }}
-                    className="icon-container"
-                  >
-                    <SkipForward color="blue" size={25} />
-                  </button>
-                  <this.endCallButton />
-                </div>
+                  id="remote-username"
+                ></h3>
+                <h3
+                  style={{
+                    textAlign: "right",
+                    color: "#1e1e1e",
+                  }}
+                  id="remote-degree"
+                ></h3>
               </div>
-            )}
+              <video
+                id="remote-video"
+                playsInline
+                autoPlay={true}
+                controls={false}
+                preload="auto"
+                type="video/mp4"
+              />
+              <video
+                muted
+                id={"local-video"}
+                playsInline={true}
+                autoPlay={true}
+                controls={false}
+                preload="auto"
+                type="video/mp4"
+              />
+              <div id="button-tab">
+                <button
+                  onClick={() => {
+                    // mute local stream
+                    this.localStream?.getAudioTracks().forEach((track) => {
+                      track.enabled = !track.enabled;
+                    });
+
+                    this.setState({ muted: !this.state.muted });
+                  }}
+                  class="icon-container"
+                >
+                  {!this.state.muted && <Mic color={"black"} size={25} />}
+                  {this.state.muted && <MicOff color="black" size={25} />}
+                </button>
+                <button
+                  onClick={() => {
+                    this.supabase
+                      .from("lobby")
+                      .update({ available: true })
+                      .eq("uid", this.uid)
+                      .then(({ error }) => {
+                        if (error) {
+                          console.log(error);
+                          return;
+                        } else {
+                          console.log("skipped user");
+                          toast("Skipping user...", {
+                            duration: 2000,
+                            icon: "⏭",
+                            id: "skip-toast",
+                            style: {
+                              zIndex: 999999,
+                              position: "absolute",
+                              bottom: "20px",
+                              left: "20px",
+                            },
+                          });
+                          this.remoteStream = null;
+                          this.remoteUserID = null;
+                          this.remoteUsername = null;
+                          const remoteVideo = document.getElementById(
+                            "remote-video"
+                          ) as HTMLVideoElement;
+                          if (remoteVideo) {
+                            remoteVideo.srcObject = null;
+                          }
+                          this.setState({ loading: true });
+                        }
+                      });
+                  }}
+                  className="icon-container"
+                >
+                  <SkipForward color="blue" size={25} />
+                </button>
+                <this.endCallButton />
+              </div>
+            </div>
           </>
         )}
       </div>

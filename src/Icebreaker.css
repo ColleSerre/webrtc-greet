@@ -1,0 +1,130 @@
+.icebreaker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-evenly;
+  height: 100vh;
+  padding: 20px 0;
+}
+
+.timer-wrapper {
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.5s, transform 0.5s;
+  width: 100px;
+  height: 100px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+}
+
+.countdown-text {
+  position: absolute;
+  top: 60%;
+  left: 50%;
+  transform: translate(-50%, -50%); /* Center the text */
+  font-size: 1.5rem;
+  color: #fff;
+  font-family: "Fredoka One", cursive; /* Updated font */
+  font-weight: 500;
+  z-index: 2; /* Ensure it's above the SVG */
+}
+
+.animated-text {
+  opacity: 0;
+  transform: scale(0.5);
+  animation: impactfulEntry 1.5s forwards;
+  font-size: 2rem;
+  font-family: "Fredoka One", cursive; /* Updated font */
+  color: #fff;
+  text-align: center;
+}
+
+@keyframes impactfulEntry {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+    color: #555;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+    color: #ff4500;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(0.9);
+    color: #fff;
+  }
+}
+
+.timer-wrapper.show {
+  opacity: 1; /* Fully visible */
+  transform: scale(1); /* Scale to normal size */
+}
+
+.circular-timer {
+  width: 100px;
+  height: 100px;
+  margin-top: 20px;
+  position: relative;
+}
+
+.timer-path {
+  fill: none;
+  stroke: #ff4500;
+  stroke-width: 4;
+  stroke-dasharray: 283; /* Approximately the circumference of the circle */
+  stroke-dashoffset: 283;
+  transition: stroke-dashoffset 5s linear;
+  animation: countdown 5s linear forwards;
+  transform-origin: center;
+}
+
+.timer-wrapper.start .timer-path {
+  animation: countdown 5s forwards;
+}
+
+@keyframes countdown {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.options {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  opacity: 0;
+  transition: opacity 1s, transform 1s;
+}
+
+.options.show {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.option {
+  flex: 0 0 calc(50% - 20px); /* subtract the total margin from the width */
+  margin: 10px; /* this creates a gap between the elements */
+  box-sizing: border-box;
+  text-align: center;
+  width: 100%;
+  height: 50%;
+  background-color: #ff4500;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+
+  color: linear-gradient(168deg, #ffcf54 0%, #ff9e90 100%, #ff9e90 100%);
+  font-weight: 500;
+  font-size: 1.5rem;
+  padding: 10px;
+}
+
+body {
+  overflow: hidden;
+}

@@ -16,7 +16,7 @@ class EndOfCall extends Component {
           justifyContent: "center",
         }}
       >
-        <h1>Call ended</h1>
+        <p>Call ended</p>
       </div>
     );
   }
