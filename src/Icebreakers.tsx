@@ -1,6 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
 import "./Icebreaker.css";
-import { SupabaseClient } from "@supabase/supabase-js";
 
 interface IcebreakerProps {
   onTimerComplete: () => void;
@@ -20,8 +19,6 @@ const Icebreaker = ({
   const [showTimer, setShowTimer] = useState(false);
   const [startCountdown, setStartCountdown] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(duration / 1000));
-
-  console.log(header, options);
 
   useEffect(() => {
     let interval: number;
